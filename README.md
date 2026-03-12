@@ -6,7 +6,10 @@
 - 融合手工 IQA 特征（锐度、噪声、曝光、对比度等）
 - Pairwise 特征建模：`f(A)-f(B)` 与 `|f(A)-f(B)|`
 - `StratifiedGroupKFold` 5-fold（按 `pair_id` 分组，防止顺序泄漏）
+- 分层策略支持 `label+source`（减少跨域 fold 波动）
 - 分类器融合：`LogisticRegression + HistGBDT + (optional) XGBoost`
+- 自动融合择优：`logreg blender` vs `weighted mean`（OOF 选优）
+- 推理阶段 `swap-TTA`：融合 `P(A,B)` 与 `1-P(B,A)`，降低顺序敏感误判
 - OOF 自动选阈值，对测试集输出 `A/B`
 
 ## 1. 项目结构
@@ -44,6 +47,7 @@ python scripts/train.py \
   --use-handcrafted 1 \
   --use-clip 1 \
   --use-pyiqa 0 \
+  --stratify-by-source 1 \
   --use-lr 1 \
   --use-hgb 1 \
   --use-xgboost 1 \
@@ -67,6 +71,7 @@ python scripts/predict.py \
   --output /path/to/predictions.jsonl \
   --output-style competition \
   --with-thinking 1 \
+  --swap-tta 1 \
   --include-prob 0 \
   --device cuda
 ```
@@ -112,6 +117,7 @@ python -u scripts/predict_ensemble.py \
   --output /path/to/predictions.jsonl \
   --output-style competition \
   --with-thinking 1 \
+  --swap-tta 1 \
   --include-prob 0
 ```
 

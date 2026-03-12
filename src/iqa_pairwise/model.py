@@ -37,6 +37,8 @@ class ModelBundle:
     blender: Optional[Any]
     threshold: float
     cv_report: dict[str, Any]
+    blend_method: str = "logreg"
+    blend_weights: Optional[list[float]] = None
 
 
 def _safe_auc(y_true: np.ndarray, y_prob: np.ndarray) -> Optional[float]:
@@ -155,14 +157,90 @@ def _log(verbose: int, msg: str) -> None:
         print(msg, flush=True)
 
 
+def _normalize_weights(weights: np.ndarray) -> np.ndarray:
+    w = np.clip(weights.astype(np.float64), 0.0, None)
+    s = float(w.sum())
+    if s <= 0:
+        return np.ones_like(w) / float(len(w))
+    return w / s
+
+
+def _grid_weight_candidates(n_models: int, step: float = 0.05) -> list[np.ndarray]:
+    if n_models == 1:
+        return [np.array([1.0], dtype=np.float64)]
+    if n_models == 2:
+        n = int(round(1.0 / step))
+        return [
+            np.array([i * step, 1.0 - i * step], dtype=np.float64)
+            for i in range(n + 1)
+        ]
+    if n_models == 3:
+        n = int(round(1.0 / step))
+        cands: list[np.ndarray] = []
+        for i in range(n + 1):
+            w0 = i * step
+            for j in range(n + 1 - i):
+                w1 = j * step
+                w2 = 1.0 - w0 - w1
+                cands.append(np.array([w0, w1, w2], dtype=np.float64))
+        return cands
+    return []
+
+
+def _optimize_blend_weights(
+    oof_stack: np.ndarray,
+    y: np.ndarray,
+    random_state: int,
+    verbose: int,
+) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+    n_models = oof_stack.shape[1]
+    grid = _grid_weight_candidates(n_models=n_models, step=0.05)
+    if not grid:
+        rng = np.random.default_rng(random_state)
+        grid = [rng.dirichlet(np.ones(n_models)).astype(np.float64) for _ in range(6000)]
+        # Keep single-model candidates.
+        for i in range(n_models):
+            one = np.zeros(n_models, dtype=np.float64)
+            one[i] = 1.0
+            grid.append(one)
+
+    best_weights = _normalize_weights(grid[0])
+    best_prob = np.clip(oof_stack @ best_weights, 0.0, 1.0)
+    best_t, best_bal, best_acc = _optimize_threshold(y, best_prob)
+
+    for w in grid[1:]:
+        ww = _normalize_weights(w)
+        p = np.clip(oof_stack @ ww, 0.0, 1.0)
+        t, bal, acc = _optimize_threshold(y, p)
+        if bal > best_bal or (abs(bal - best_bal) < 1e-12 and acc > best_acc):
+            best_weights = ww
+            best_prob = p
+            best_t = t
+            best_bal = bal
+            best_acc = acc
+
+    _log(
+        verbose,
+        (
+            "[CV] Best weighted blend "
+            f"| weights={best_weights.round(4).tolist()} "
+            f"| threshold={best_t:.3f} bal_acc={best_bal:.4f} acc={best_acc:.4f}"
+        ),
+    )
+    return best_weights, best_prob, best_t, best_bal, best_acc
+
+
 def train_with_cv(
     X: np.ndarray,
     y: np.ndarray,
     groups: np.ndarray,
     cfg: TrainConfig,
+    stratify_labels: Optional[np.ndarray] = None,
 ) -> tuple[ModelBundle, dict[str, np.ndarray], np.ndarray]:
     if X.shape[0] != y.shape[0] or X.shape[0] != groups.shape[0]:
         raise ValueError("X/y/groups size mismatch.")
+    if stratify_labels is not None and stratify_labels.shape[0] != X.shape[0]:
+        raise ValueError("stratify_labels size mismatch.")
 
     estimators = _build_estimators(cfg)
     base_order = list(estimators.keys())
@@ -176,8 +254,9 @@ def train_with_cv(
     n = X.shape[0]
     oof_base: dict[str, np.ndarray] = {name: np.zeros(n, dtype=np.float64) for name in base_order}
     fold_reports: list[dict[str, Any]] = []
+    split_y = stratify_labels if stratify_labels is not None else y
 
-    for fold_idx, (tr_idx, va_idx) in enumerate(cv.split(X, y, groups), start=1):
+    for fold_idx, (tr_idx, va_idx) in enumerate(cv.split(X, split_y, groups), start=1):
         _log(
             cfg.verbose,
             f"[CV] Fold {fold_idx}/{cfg.n_splits} | train={len(tr_idx)} valid={len(va_idx)}",
@@ -223,28 +302,73 @@ def train_with_cv(
 
         fold_reports.append(one_fold)
 
-    # Build blender with OOF predictions.
-    _log(cfg.verbose, "[CV] Fitting blender on OOF predictions ...")
+    # Build final blend from OOF predictions:
+    #   1) logreg blender
+    #   2) non-negative weighted average via grid/random search
+    # Pick whichever gives better OOF balanced accuracy.
+    _log(cfg.verbose, "[CV] Building OOF blend ...")
     oof_stack = np.column_stack([oof_base[name] for name in base_order])
+
     blender = None
+    blend_method = "weighted_mean"
+    blend_weights: Optional[list[float]] = None
+
+    weighted_w, weighted_prob, weighted_t, weighted_bal, weighted_acc = _optimize_blend_weights(
+        oof_stack=oof_stack,
+        y=y,
+        random_state=cfg.random_state,
+        verbose=cfg.verbose,
+    )
+
+    candidate_report: dict[str, Any] = {
+        "weighted_mean": {
+            "weights": weighted_w.tolist(),
+            "threshold": float(weighted_t),
+            "best_bal_acc": float(weighted_bal),
+            "best_acc": float(weighted_acc),
+            "auc": _safe_auc(y, weighted_prob),
+        }
+    }
+
+    selected_prob = weighted_prob
+    threshold = weighted_t
+    best_bal = weighted_bal
+    best_acc = weighted_acc
+    blend_weights = weighted_w.tolist()
+
     if oof_stack.shape[1] >= 2:
-        blender = LogisticRegression(
+        _log(cfg.verbose, "[CV] Fitting logreg blender on OOF predictions ...")
+        logreg_blender = LogisticRegression(
             C=1.0,
             max_iter=3000,
             random_state=cfg.random_state,
             solver="lbfgs",
         )
-        blender.fit(oof_stack, y)
-        oof_final = blender.predict_proba(oof_stack)[:, 1]
-    else:
-        oof_final = oof_stack[:, 0]
+        logreg_blender.fit(oof_stack, y)
+        logreg_prob = logreg_blender.predict_proba(oof_stack)[:, 1]
+        logreg_t, logreg_bal, logreg_acc = _optimize_threshold(y, logreg_prob)
+        candidate_report["logreg"] = {
+            "threshold": float(logreg_t),
+            "best_bal_acc": float(logreg_bal),
+            "best_acc": float(logreg_acc),
+            "auc": _safe_auc(y, logreg_prob),
+        }
 
-    threshold, best_bal, best_acc = _optimize_threshold(y, oof_final)
+        if logreg_bal > best_bal or (abs(logreg_bal - best_bal) < 1e-12 and logreg_acc > best_acc):
+            blender = logreg_blender
+            blend_method = "logreg"
+            blend_weights = None
+            selected_prob = logreg_prob
+            threshold = logreg_t
+            best_bal = logreg_bal
+            best_acc = logreg_acc
+
+    oof_final = selected_prob
     oof_pred = (oof_final >= threshold).astype(np.int64)
     _log(
         cfg.verbose,
         (
-            f"[CV] OOF done | threshold={threshold:.3f} "
+            f"[CV] OOF done | method={blend_method} threshold={threshold:.3f} "
             f"best_bal_acc={best_bal:.4f} best_acc={best_acc:.4f}"
         ),
     )
@@ -274,9 +398,13 @@ def train_with_cv(
         "config": asdict(cfg),
         "n_samples": int(X.shape[0]),
         "n_features": int(X.shape[1]),
+        "split_target": "stratify_labels" if stratify_labels is not None else "label",
         "base_models": base_order,
         "per_model_oof": per_model_report,
+        "blend_candidates": candidate_report,
         "blended_oof": {
+            "method": blend_method,
+            "weights": blend_weights,
             "threshold": threshold,
             "acc": float(accuracy_score(y, oof_pred)),
             "bal_acc": float(balanced_accuracy_score(y, oof_pred)),
@@ -293,6 +421,8 @@ def train_with_cv(
         base_models=full_models,
         base_order=base_order,
         blender=blender,
+        blend_method=blend_method,
+        blend_weights=blend_weights,
         threshold=threshold,
         cv_report=cv_report,
     )
@@ -305,7 +435,16 @@ def predict_proba(bundle: ModelBundle, X: np.ndarray) -> tuple[np.ndarray, dict[
         per_model[name] = _pred_proba(bundle.base_models[name], X)
 
     stack = np.column_stack([per_model[name] for name in bundle.base_order])
-    if bundle.blender is not None:
+    blend_method = getattr(bundle, "blend_method", "logreg")
+    blend_weights = getattr(bundle, "blend_weights", None)
+
+    if blend_method == "weighted_mean":
+        if blend_weights is None:
+            weights = np.ones(stack.shape[1], dtype=np.float64) / float(stack.shape[1])
+        else:
+            weights = _normalize_weights(np.array(blend_weights, dtype=np.float64))
+        p = np.clip(stack @ weights, 0.0, 1.0)
+    elif bundle.blender is not None:
         p = bundle.blender.predict_proba(stack)[:, 1]
     else:
         p = stack[:, 0]

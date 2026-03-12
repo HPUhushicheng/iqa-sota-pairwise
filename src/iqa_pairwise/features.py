@@ -24,6 +24,7 @@ class PairFeatureDataset:
     X: np.ndarray
     y: Optional[np.ndarray]
     groups: np.ndarray
+    sources: np.ndarray
     samples: list[PairSample]
     left_stats: list[dict[str, float]]
     right_stats: list[dict[str, float]]
@@ -302,6 +303,7 @@ def build_pair_dataset(
     X_rows: list[np.ndarray] = []
     y_rows: list[int] = []
     groups: list[str] = []
+    sources: list[str] = []
     left_stats: list[dict[str, float]] = []
     right_stats: list[dict[str, float]] = []
 
@@ -312,6 +314,7 @@ def build_pair_dataset(
 
         X_rows.append(make_pair_feature(l_feat.vector, r_feat.vector, include_raw=include_raw))
         groups.append(s.pair_id)
+        sources.append(s.source)
 
         if s.label is not None:
             y_rows.append(1 if s.label == "A" else 0)
@@ -327,11 +330,13 @@ def build_pair_dataset(
     X = np.stack(X_rows, axis=0).astype(np.float32)
     y = np.array(y_rows, dtype=np.int64) if y_rows else None
     g = np.array(groups)
+    src = np.array(sources)
 
     return PairFeatureDataset(
         X=X,
         y=y,
         groups=g,
+        sources=src,
         samples=samples,
         left_stats=left_stats,
         right_stats=right_stats,

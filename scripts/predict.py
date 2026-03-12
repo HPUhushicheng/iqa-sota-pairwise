@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from iqa_pairwise.data import load_many, parse_dataset_spec
+from iqa_pairwise.data import PairSample, load_many, parse_dataset_spec
 from iqa_pairwise.features import ImageFeatureExtractor, build_pair_dataset
 from iqa_pairwise.model import predict_proba, proba_to_label
 from iqa_pairwise.thinking import build_thinking
@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--with-thinking", type=int, default=1)
     ap.add_argument("--include-prob", type=int, default=0)
     ap.add_argument("--threshold", type=float, default=None)
+    ap.add_argument("--swap-tta", type=int, default=1, help="1: average P(A,B) with 1-P(B,A)")
     ap.add_argument("--device", default=None, help="Override device in model bundle")
     ap.add_argument("--no-progress", action="store_true")
     return ap.parse_args()
@@ -76,6 +77,30 @@ def main() -> None:
 
     bundle = payload["model_bundle"]
     probs, per_model = predict_proba(bundle, pair_ds.X)
+
+    if bool(args.swap_tta):
+        swapped_samples = [
+            PairSample(
+                source=s.source,
+                line_id=s.line_id,
+                pair_id=s.pair_id,
+                left_name=s.right_name,
+                right_name=s.left_name,
+                left_path=s.right_path,
+                right_path=s.left_path,
+                label=None,
+            )
+            for s in pair_ds.samples
+        ]
+        swapped_ds = build_pair_dataset(
+            samples=swapped_samples,
+            extractor=extractor,
+            include_raw=bool(pair_cfg.get("include_raw", False)),
+            show_progress=False,
+        )
+        probs_swap, _ = predict_proba(bundle, swapped_ds.X)
+        probs = 0.5 * (probs + (1.0 - probs_swap))
+        print("[OK] swap-tta applied", flush=True)
 
     threshold = float(args.threshold) if args.threshold is not None else float(bundle.threshold)
     labels = proba_to_label(probs, threshold=threshold)

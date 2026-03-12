@@ -58,6 +58,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--n-splits", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--verbose", type=int, default=1, help="0: quiet, 1: show fold/model progress")
+    ap.add_argument(
+        "--stratify-by-source",
+        type=int,
+        default=1,
+        help="1: use (label,source) stratification for folds; 0: stratify by label only",
+    )
 
     ap.add_argument("--use-handcrafted", type=int, default=1)
     ap.add_argument("--use-clip", type=int, default=1)
@@ -126,6 +132,18 @@ def main() -> None:
         use_xgboost=bool(args.use_xgboost),
     )
 
+    stratify_labels = pair_ds.y
+    if bool(args.stratify_by_source):
+        uniq_src = sorted(set(pair_ds.sources.tolist()))
+        src_to_idx = {s: i for i, s in enumerate(uniq_src)}
+        src_idx = [src_to_idx[s] for s in pair_ds.sources.tolist()]
+        # Keep class separable while balancing domains across folds.
+        stratify_labels = pair_ds.y * 100 + src_idx
+        if args.verbose > 0:
+            print(f"[Stage] Stratify mode: label+source ({uniq_src})", flush=True)
+    elif args.verbose > 0:
+        print("[Stage] Stratify mode: label only", flush=True)
+
     if args.verbose > 0:
         print("[Stage] Training with group 5-fold CV ...", flush=True)
     model_bundle, oof_base, oof_final = train_with_cv(
@@ -133,6 +151,7 @@ def main() -> None:
         y=pair_ds.y,
         groups=pair_ds.groups,
         cfg=cfg,
+        stratify_labels=stratify_labels,
     )
 
     pred_label = proba_to_label(oof_final, threshold=model_bundle.threshold)
@@ -193,7 +212,8 @@ def main() -> None:
     print(f"[OK] features: {pair_ds.X.shape[1]}")
     print(f"[OK] base models: {', '.join(model_bundle.base_order)}")
     print(
-        "[OK] blended OOF bal_acc={:.4f} acc={:.4f} threshold={:.3f}".format(
+        "[OK] blended OOF method={} bal_acc={:.4f} acc={:.4f} threshold={:.3f}".format(
+            model_bundle.cv_report["blended_oof"].get("method", "unknown"),
             model_bundle.cv_report["blended_oof"]["bal_acc"],
             model_bundle.cv_report["blended_oof"]["acc"],
             model_bundle.threshold,

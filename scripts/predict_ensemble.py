@@ -15,7 +15,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from iqa_pairwise.data import load_many, parse_dataset_spec
+from iqa_pairwise.data import PairSample, load_many, parse_dataset_spec
 from iqa_pairwise.features import ImageFeatureExtractor, build_pair_dataset
 from iqa_pairwise.model import predict_proba, proba_to_label
 from iqa_pairwise.thinking import build_thinking
@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
         help="If not set, use average of model thresholds.",
     )
     ap.add_argument("--device", default=None, help="Override device in model bundles")
+    ap.add_argument("--swap-tta", type=int, default=1, help="1: average P(A,B) with 1-P(B,A)")
     ap.add_argument("--no-progress", action="store_true")
     return ap.parse_args()
 
@@ -109,11 +110,37 @@ def main() -> None:
         include_raw=bool(pair_cfg.get("include_raw", False)),
         show_progress=not args.no_progress,
     )
+    swapped_ds = None
+    if bool(args.swap_tta):
+        swapped_samples = [
+            PairSample(
+                source=s.source,
+                line_id=s.line_id,
+                pair_id=s.pair_id,
+                left_name=s.right_name,
+                right_name=s.left_name,
+                left_path=s.right_path,
+                right_path=s.left_path,
+                label=None,
+            )
+            for s in pair_ds.samples
+        ]
+        swapped_ds = build_pair_dataset(
+            samples=swapped_samples,
+            extractor=extractor,
+            include_raw=bool(pair_cfg.get("include_raw", False)),
+            show_progress=False,
+        )
 
     model_probs = []
     for payload in payloads:
         bundle = payload["model_bundle"]
         p, _ = predict_proba(bundle, pair_ds.X)
+
+        if swapped_ds is not None:
+            p_swap, _ = predict_proba(bundle, swapped_ds.X)
+            p = 0.5 * (p + (1.0 - p_swap))
+
         model_probs.append(p)
 
     probs_mat = np.column_stack(model_probs)
@@ -155,6 +182,8 @@ def main() -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     print(f"[OK] ensembled models: {len(payloads)}")
+    if bool(args.swap_tta):
+        print("[OK] swap-tta applied")
     print(f"[OK] threshold={threshold:.4f}")
     print(f"[OK] wrote {len(pair_ds.samples)} rows -> {out_path}")
 
