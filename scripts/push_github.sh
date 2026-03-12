@@ -14,5 +14,5 @@ fi
 
 # 3) Push to remote main (from local codex branch)
 git remote remove origin >/dev/null 2>&1 || true
-git remote add origin "git@github.com:${OWNER}/${REPO_NAME}.git"
+git remote add origin "https://github.com/${OWNER}/${REPO_NAME}.git"
 git push -u origin codex/iqa-pairwise-sota:main
