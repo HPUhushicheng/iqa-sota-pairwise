@@ -115,6 +115,22 @@ bash scripts/sweep_denoise.sh \
 
 输出会生成 `leaderboard.csv`，自动给出 Top-3 和最佳配置。
 
+### 6.2 直接从 test 文件夹推理（无 data.jsonl）
+
+当测试目录只包含成对文件 `*_c0.*` / `*_c1.*` 时：
+
+```bash
+python -u scripts/predict_from_folder.py \
+  --model-bundle /root/autodl-tmp/artifacts/run_clip_pairwise/model_bundle.joblib \
+  --test-dir /root/autodl-tmp/test \
+  --output /root/autodl-tmp/test_answers.jsonl \
+  --output-style answer \
+  --swap-tta 1 \
+  --strict 1
+```
+
+输出中固定按 `[c0, c1]` 排列：`answer=A` 表示 `c0` 更好，`answer=B` 表示 `c1` 更好。
+
 ## 7. 多 Seed 集成（推荐）
 
 ### 7.1 训练 3 个 seed
