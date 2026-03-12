@@ -131,6 +131,23 @@ python -u scripts/predict_from_folder.py \
 
 输出中固定按 `[c0, c1]` 排列：`answer=A` 表示 `c0` 更好，`answer=B` 表示 `c1` 更好。
 
+### 6.3 多模型平均概率（无 data.jsonl，一次跑完）
+
+```bash
+python -u scripts/predict_ensemble_from_folder.py \
+  --model-bundle /root/autodl-tmp/artifacts/run_clip_pairwise/model_bundle.joblib \
+  --model-bundle /root/autodl-tmp/artifacts/run_clip_pairwise_v2/model_bundle.joblib \
+  --model-bundle /root/autodl-tmp/artifacts/sweep_denoise/flip_t065/model_bundle.joblib \
+  --test-dir /root/autodl-tmp/test \
+  --output /root/autodl-tmp/test_predictions_ensemble.jsonl \
+  --output-style answer \
+  --swap-tta 1 \
+  --strict 1 \
+  --device cuda
+```
+
+这条命令会在一次运行内完成：配对 -> 每个模型预测 -> 平均概率 -> 输出最终 `answer`。
+
 ## 7. 多 Seed 集成（推荐）
 
 ### 7.1 训练 3 个 seed
