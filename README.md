@@ -88,7 +88,34 @@ python scripts/predict.py \
 2. 调整 `clip_model`（例如更大 CLIP backbone）。
 3. 对 OOF 概率再做温度缩放或更细阈值搜索。
 
-## 7. 推送到 GitHub
+## 7. 多 Seed 集成（推荐）
+
+### 7.1 训练 3 个 seed
+
+```bash
+bash scripts/train_multiseed.sh \
+  /root/autodl-tmp/train_data/1536/data.jsonl \
+  /root/autodl-tmp/train_data/1536/images \
+  /root/autodl-tmp/train_data/images/data.jsonl \
+  /root/autodl-tmp/train_data/images \
+  /root/autodl-tmp/artifacts/multiseed
+```
+
+### 7.2 多模型平均概率推理
+
+```bash
+python -u scripts/predict_ensemble.py \
+  --model-bundle /root/autodl-tmp/artifacts/multiseed/seed_42/model_bundle.joblib \
+  --model-bundle /root/autodl-tmp/artifacts/multiseed/seed_2024/model_bundle.joblib \
+  --model-bundle /root/autodl-tmp/artifacts/multiseed/seed_3407/model_bundle.joblib \
+  --dataset test:/path/to/test/data.jsonl:/path/to/test/images \
+  --output /path/to/predictions.jsonl \
+  --output-style competition \
+  --with-thinking 1 \
+  --include-prob 0
+```
+
+## 8. 推送到 GitHub
 
 仓库里已提供脚本（会创建仓库并推送到你的账号）：
 
