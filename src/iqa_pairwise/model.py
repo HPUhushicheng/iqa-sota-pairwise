@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import copy
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
@@ -19,6 +19,7 @@ from sklearn.preprocessing import StandardScaler
 class TrainConfig:
     n_splits: int = 5
     random_state: int = 42
+    verbose: int = 1
     use_lr: bool = True
     use_hgb: bool = True
     use_xgboost: bool = True
@@ -119,6 +120,7 @@ def _build_estimators(cfg: TrainConfig) -> dict[str, Any]:
                             objective="binary:logistic",
                             eval_metric="logloss",
                             tree_method="hist",
+                            verbosity=0,
                             random_state=cfg.random_state,
                         ),
                     ),
@@ -148,6 +150,11 @@ def _optimize_threshold(y: np.ndarray, prob: np.ndarray) -> tuple[float, float, 
     return best_t, best_bal, best_acc
 
 
+def _log(verbose: int, msg: str) -> None:
+    if verbose > 0:
+        print(msg, flush=True)
+
+
 def train_with_cv(
     X: np.ndarray,
     y: np.ndarray,
@@ -171,6 +178,10 @@ def train_with_cv(
     fold_reports: list[dict[str, Any]] = []
 
     for fold_idx, (tr_idx, va_idx) in enumerate(cv.split(X, y, groups), start=1):
+        _log(
+            cfg.verbose,
+            f"[CV] Fold {fold_idx}/{cfg.n_splits} | train={len(tr_idx)} valid={len(va_idx)}",
+        )
         x_tr, x_va = X[tr_idx], X[va_idx]
         y_tr, y_va = y[tr_idx], y[va_idx]
 
@@ -182,22 +193,38 @@ def train_with_cv(
         }
 
         for name, est in estimators.items():
+            _log(cfg.verbose, f"[CV] Fold {fold_idx}/{cfg.n_splits} -> fitting {name} ...")
+            t0 = time.perf_counter()
             model = clone(est)
             model.fit(x_tr, y_tr)
+            elapsed = time.perf_counter() - t0
             p = _pred_proba(model, x_va)
             oof_base[name][va_idx] = p
 
             pred = (p >= 0.5).astype(np.int64)
+            fold_acc = float(accuracy_score(y_va, pred))
+            fold_bal_acc = float(balanced_accuracy_score(y_va, pred))
+            fold_f1 = float(f1_score(y_va, pred, zero_division=0))
+            fold_auc = _safe_auc(y_va, p)
             one_fold["models"][name] = {
-                "acc@0.5": float(accuracy_score(y_va, pred)),
-                "bal_acc@0.5": float(balanced_accuracy_score(y_va, pred)),
-                "f1@0.5": float(f1_score(y_va, pred, zero_division=0)),
-                "auc": _safe_auc(y_va, p),
+                "acc@0.5": fold_acc,
+                "bal_acc@0.5": fold_bal_acc,
+                "f1@0.5": fold_f1,
+                "auc": fold_auc,
             }
+            _log(
+                cfg.verbose,
+                (
+                    f"[CV] Fold {fold_idx}/{cfg.n_splits} -> {name} done in {elapsed:.1f}s "
+                    f"| acc={fold_acc:.4f} bal_acc={fold_bal_acc:.4f} f1={fold_f1:.4f} "
+                    f"auc={fold_auc if fold_auc is not None else 'NA'}"
+                ),
+            )
 
         fold_reports.append(one_fold)
 
     # Build blender with OOF predictions.
+    _log(cfg.verbose, "[CV] Fitting blender on OOF predictions ...")
     oof_stack = np.column_stack([oof_base[name] for name in base_order])
     blender = None
     if oof_stack.shape[1] >= 2:
@@ -214,12 +241,23 @@ def train_with_cv(
 
     threshold, best_bal, best_acc = _optimize_threshold(y, oof_final)
     oof_pred = (oof_final >= threshold).astype(np.int64)
+    _log(
+        cfg.verbose,
+        (
+            f"[CV] OOF done | threshold={threshold:.3f} "
+            f"best_bal_acc={best_bal:.4f} best_acc={best_acc:.4f}"
+        ),
+    )
 
     full_models: dict[str, Any] = {}
     for name, est in estimators.items():
+        _log(cfg.verbose, f"[FIT] Training full model: {name} ...")
+        t0 = time.perf_counter()
         model = clone(est)
         model.fit(X, y)
+        elapsed = time.perf_counter() - t0
         full_models[name] = model
+        _log(cfg.verbose, f"[FIT] {name} done in {elapsed:.1f}s")
 
     per_model_report: dict[str, Any] = {}
     for name in base_order:

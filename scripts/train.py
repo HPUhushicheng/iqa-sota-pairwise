@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +21,30 @@ from iqa_pairwise.features import ImageFeatureExtractor, build_pair_dataset
 from iqa_pairwise.model import TrainConfig, proba_to_label, train_with_cv
 
 
+def _sanitize_thread_env(verbose: int) -> None:
+    keys = [
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ]
+    for key in keys:
+        val = os.environ.get(key)
+        if val is None:
+            continue
+        try:
+            n = int(val)
+            if n <= 0:
+                raise ValueError("not positive")
+        except Exception:
+            os.environ.pop(key, None)
+            if verbose > 0:
+                print(
+                    f"[WARN] Invalid {key}={val!r}. Unset it to avoid libgomp issues.",
+                    flush=True,
+                )
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Train pairwise IQA A/B classifier with small-data robust CV.")
     ap.add_argument(
@@ -33,6 +57,7 @@ def parse_args() -> argparse.Namespace:
 
     ap.add_argument("--n-splits", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--verbose", type=int, default=1, help="0: quiet, 1: show fold/model progress")
 
     ap.add_argument("--use-handcrafted", type=int, default=1)
     ap.add_argument("--use-clip", type=int, default=1)
@@ -54,13 +79,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    _sanitize_thread_env(verbose=args.verbose)
+
     artifact_dir = Path(args.artifact_dir).resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    if args.verbose > 0:
+        print(f"[Stage] Artifacts -> {artifact_dir}", flush=True)
 
+    if args.verbose > 0:
+        print("[Stage] Loading datasets ...", flush=True)
     specs = [parse_dataset_spec(s) for s in args.dataset]
     samples = load_many(specs=specs, require_label=True)
     if not samples:
         raise RuntimeError("No samples loaded.")
+    if args.verbose > 0:
+        print(f"[Stage] Loaded samples: {len(samples)}", flush=True)
 
     pyiqa_metrics = [m.strip() for m in args.pyiqa_metrics.split(",") if m.strip()]
 
@@ -73,6 +106,8 @@ def main() -> None:
         pyiqa_metrics=pyiqa_metrics,
     )
 
+    if args.verbose > 0:
+        print("[Stage] Extracting pair features ...", flush=True)
     pair_ds = build_pair_dataset(
         samples=samples,
         extractor=extractor,
@@ -85,11 +120,14 @@ def main() -> None:
     cfg = TrainConfig(
         n_splits=args.n_splits,
         random_state=args.seed,
+        verbose=args.verbose,
         use_lr=bool(args.use_lr),
         use_hgb=bool(args.use_hgb),
         use_xgboost=bool(args.use_xgboost),
     )
 
+    if args.verbose > 0:
+        print("[Stage] Training with group 5-fold CV ...", flush=True)
     model_bundle, oof_base, oof_final = train_with_cv(
         X=pair_ds.X,
         y=pair_ds.y,
@@ -148,6 +186,8 @@ def main() -> None:
         "model_bundle": model_bundle,
     }
     joblib.dump(payload, bundle_path)
+    if args.verbose > 0:
+        print(f"[Stage] Saved model bundle -> {bundle_path}", flush=True)
 
     print(f"[OK] samples: {len(pair_ds.samples)}")
     print(f"[OK] features: {pair_ds.X.shape[1]}")
