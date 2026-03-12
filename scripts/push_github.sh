@@ -12,7 +12,7 @@ if ! gh repo view "${OWNER}/${REPO_NAME}" >/dev/null 2>&1; then
   gh repo create "${OWNER}/${REPO_NAME}" --public --description "Small-data pairwise IQA baseline: CLIP + LR/XGB + GroupKFold" --confirm
 fi
 
-# 3) Push current branch and set upstream
+# 3) Push to remote main (from local codex branch)
 git remote remove origin >/dev/null 2>&1 || true
 git remote add origin "git@github.com:${OWNER}/${REPO_NAME}.git"
-git push -u origin codex/iqa-pairwise-sota
+git push -u origin codex/iqa-pairwise-sota:main
