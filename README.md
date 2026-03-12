@@ -87,3 +87,14 @@ python scripts/predict.py \
 1. 开启 `--use-pyiqa 1`，增加 NR-IQA 先验特征。
 2. 调整 `clip_model`（例如更大 CLIP backbone）。
 3. 对 OOF 概率再做温度缩放或更细阈值搜索。
+
+## 7. 推送到 GitHub
+
+仓库里已提供脚本（会创建仓库并推送到你的账号）：
+
+```bash
+cd iqa_sota_pairwise
+./scripts/push_github.sh
+```
+
+默认目标仓库：`HPUhushicheng/iqa-sota-pairwise`。
