@@ -102,6 +102,19 @@ python scripts/predict.py \
 2. 调整 `clip_model`（例如更大 CLIP backbone）。
 3. 对 OOF 概率再做温度缩放或更细阈值搜索。
 
+### 6.1 自动扫 noisy/trusted 策略
+
+```bash
+bash scripts/sweep_denoise.sh \
+  /root/autodl-tmp/train_data/1536/data.jsonl \
+  /root/autodl-tmp/train_data/1536/images \
+  /root/autodl-tmp/train_data/images/data.jsonl \
+  /root/autodl-tmp/train_data/images \
+  /root/autodl-tmp/artifacts/sweep_denoise
+```
+
+输出会生成 `leaderboard.csv`，自动给出 Top-3 和最佳配置。
+
 ## 7. 多 Seed 集成（推荐）
 
 ### 7.1 训练 3 个 seed
