@@ -47,6 +47,13 @@ python scripts/train.py \
   --use-handcrafted 1 \
   --use-clip 1 \
   --use-pyiqa 0 \
+  --trusted-source train1536 \
+  --noisy-source validNew \
+  --denoise-action flip \
+  --denoise-threshold 0.85 \
+  --trusted-weight 1.0 \
+  --noisy-weight 0.6 \
+  --flipped-weight 0.8 \
   --stratify-by-source 1 \
   --use-lr 1 \
   --use-hgb 1 \
@@ -59,6 +66,7 @@ python scripts/train.py \
 - `artifacts/run_clip_pairwise/model_bundle.joblib`
 - `artifacts/run_clip_pairwise/cv_report.json`
 - `artifacts/run_clip_pairwise/oof_predictions.csv`
+- `artifacts/run_clip_pairwise/dropped_samples.csv`（仅当 `--denoise-action drop` 时产生）
 
 ## 4. 测试集推理 / 生成提交
 
@@ -86,6 +94,7 @@ python scripts/predict.py \
 1. 你的 `1536` 与 `new` 存在大量同名文件，但文件内容不同；训练必须把 `source` 纳入样本标识。
 2. 不能用普通随机 KFold；必须按 `pair_id` 分组划分，否则验证分数会虚高。
 3. 小样本下不建议直接 SFT 微调 VLM，过拟合风险高；冻结特征 + 轻量分类器更稳。
+4. 若某个 source 存在标签噪声（例如 `validNew`），建议启用：`--trusted-source train1536 --noisy-source validNew --denoise-action flip`。
 
 ## 6. 可继续提升
 

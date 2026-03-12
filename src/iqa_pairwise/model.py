@@ -63,6 +63,25 @@ def _pred_proba(model: Any, x: np.ndarray) -> np.ndarray:
     return y.astype(np.float64)
 
 
+def _fit_with_sample_weight(model: Any, x: np.ndarray, y: np.ndarray, sample_weight: Optional[np.ndarray]) -> None:
+    if sample_weight is None:
+        model.fit(x, y)
+        return
+    sw = np.asarray(sample_weight, dtype=np.float64)
+    # Most estimators are wrapped in a Pipeline with final step name "clf".
+    try:
+        model.fit(x, y, clf__sample_weight=sw)
+        return
+    except Exception:
+        pass
+    # Fallback for plain estimators.
+    try:
+        model.fit(x, y, sample_weight=sw)
+        return
+    except Exception:
+        model.fit(x, y)
+
+
 def _build_estimators(cfg: TrainConfig) -> dict[str, Any]:
     estimators: dict[str, Any] = {}
 
@@ -236,11 +255,17 @@ def train_with_cv(
     groups: np.ndarray,
     cfg: TrainConfig,
     stratify_labels: Optional[np.ndarray] = None,
+    sample_weight: Optional[np.ndarray] = None,
 ) -> tuple[ModelBundle, dict[str, np.ndarray], np.ndarray]:
     if X.shape[0] != y.shape[0] or X.shape[0] != groups.shape[0]:
         raise ValueError("X/y/groups size mismatch.")
     if stratify_labels is not None and stratify_labels.shape[0] != X.shape[0]:
         raise ValueError("stratify_labels size mismatch.")
+    sw_all: Optional[np.ndarray] = None
+    if sample_weight is not None:
+        sw_all = np.asarray(sample_weight, dtype=np.float64)
+        if sw_all.shape[0] != X.shape[0]:
+            raise ValueError("sample_weight size mismatch.")
 
     estimators = _build_estimators(cfg)
     base_order = list(estimators.keys())
@@ -275,7 +300,8 @@ def train_with_cv(
             _log(cfg.verbose, f"[CV] Fold {fold_idx}/{cfg.n_splits} -> fitting {name} ...")
             t0 = time.perf_counter()
             model = clone(est)
-            model.fit(x_tr, y_tr)
+            sw_tr = sw_all[tr_idx] if sw_all is not None else None
+            _fit_with_sample_weight(model, x_tr, y_tr, sw_tr)
             elapsed = time.perf_counter() - t0
             p = _pred_proba(model, x_va)
             oof_base[name][va_idx] = p
@@ -378,7 +404,7 @@ def train_with_cv(
         _log(cfg.verbose, f"[FIT] Training full model: {name} ...")
         t0 = time.perf_counter()
         model = clone(est)
-        model.fit(X, y)
+        _fit_with_sample_weight(model, X, y, sw_all)
         elapsed = time.perf_counter() - t0
         full_models[name] = model
         _log(cfg.verbose, f"[FIT] {name} done in {elapsed:.1f}s")
